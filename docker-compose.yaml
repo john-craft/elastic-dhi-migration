@@ -27,6 +27,7 @@ services:
     image: docker.elastic.co/elasticsearch/elasticsearch:${STACK_VERSION}
     volumes:
       - certs:/usr/share/elasticsearch/config/certs
+      - ./config/elasticsearch.yml:/usr/share/elasticsearch/config/elasticsearch.yml
     user: "0"
     command: >
       bash -c '
@@ -81,7 +82,7 @@ services:
     depends_on:
       setup:
         condition: service_healthy
-    image: your-docker-hub-namespace/dhi-elasticsearch:8
+    image: ${DHI_NAMESPACE}/dhi-elasticsearch:${DHI_ES_VERSION}
     labels:
       co.elastic.logs/module: elasticsearch
     volumes:
