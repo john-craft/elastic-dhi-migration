@@ -29,7 +29,8 @@ find . -type d -exec chmod 755 {} \;
 find . -type f -exec chmod 644 {} \;
 ```
 
-> Note: `644` makes the demo TLS keys readable by any user inside the container —
+> [!NOTE]
+> `644` makes the demo TLS keys readable by any user inside the container —
 > acceptable for this local/POC setup. For a locked-down variant, `chown` the
 > certs to the image's actual runtime UID/GID and keep `750`/`640`.
 
