@@ -27,6 +27,7 @@ services:
     image: docker.elastic.co/elasticsearch/elasticsearch:${STACK_VERSION}
     volumes:
       - certs:/usr/share/elasticsearch/config/certs
+      - esdata01:/usr/share/elasticsearch/data
       - ./config/elasticsearch.yml:/usr/share/elasticsearch/config/elasticsearch.yml
     user: "0"
     command: >
@@ -65,8 +66,11 @@ services:
         fi;
         echo "Setting file permissions"
         chown -R root:root config/certs;
-        find . -type d -exec chmod 755 \{\} \;;
-        find . -type f -exec chmod 644 \{\} \;;
+        find config/certs -type d -exec chmod 755 \{\} \;;
+        find config/certs -type f -exec chmod 644 \{\} \;;
+        echo "Setting data directory ownership for the DHI runtime user";
+        chown -R 1000:0 /usr/share/elasticsearch/data;
+        chmod 770 /usr/share/elasticsearch/data;
         echo "Waiting for Elasticsearch availability";
         until curl -s --cacert config/certs/ca/ca.crt https://es01:9200 | grep -q "missing authentication credentials"; do sleep 30; done;
         echo "Setting kibana_system password";
@@ -83,6 +87,9 @@ services:
       setup:
         condition: service_healthy
     image: ${DHI_NAMESPACE}/dhi-elasticsearch:${DHI_ES_VERSION}
+    # es01 is verbose at startup; don't stream its logs to the terminal during
+    # `docker compose up`. Logs are still captured (`docker compose logs es01`).
+    attach: false
     labels:
       co.elastic.logs/module: elasticsearch
     volumes:
