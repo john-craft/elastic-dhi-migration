@@ -56,10 +56,40 @@ startup; these are harmless `WARN`s emitted every few seconds. The
 `config/elasticsearch.yml` raises that one logger to `ERROR` to keep the log
 readable.
 
+### 4. Data volume not writable (`failed to obtain node locks`)
+
+With config now loading correctly, `es01` died on startup with:
+
+```
+failed to obtain node locks, tried [/usr/share/elasticsearch/data]; maybe these
+locations are not writable or multiple nodes were started on the same data path?
+```
+
+Despite the "multiple nodes" wording, this is a **permissions** problem (we run
+`discovery.type: single-node`): the DHI runtime user couldn't write to its data
+path. Docker seeds a fresh named volume with the ownership of the directory in
+the image of the **first container to mount it**. `esdata01` was first mounted by
+`es01` (the DHI image), so it inherited an ownership the non-root DHI user can't
+write to.
+
+**Fix:** the `setup` service (which uses the stock image, runs as root, and starts
+before `es01`) now also mounts `esdata01` and explicitly chowns it to the runtime
+user:
+
+```
+chown -R 1000:0 /usr/share/elasticsearch/data;
+chmod 770 /usr/share/elasticsearch/data;
+```
+
+The earlier cert-permission pass was also scoped from `.` (the whole working
+directory) down to `config/certs`, so it no longer re-chmods the entire data tree
+on every `docker compose up`.
+
 ## Files
 
 - `docker-compose.yaml` — stack definition; `es01` uses the DHI image and mounts
-  `config/elasticsearch.yml`.
+  `config/elasticsearch.yml`. The `setup` service mounts `esdata01` to seed and
+  chown the data directory before `es01` starts.
 - `config/elasticsearch.yml` — Elasticsearch settings (previously passed as env
   vars).
 - `.env` — versions, passwords, ports, memory limits.
@@ -76,3 +106,37 @@ Verify the cluster is up and authenticating:
 curl -s --cacert config/certs/ca/ca.crt -u elastic:$ELASTIC_PASSWORD \
   https://localhost:9200/_cluster/health
 ```
+
+## Quieting es01 logs
+
+`es01` is verbose at startup and can drown out the rest of the stack in the
+terminal. The compose file sets `attach: false` on `es01`, which stops Compose
+from *streaming* its output during `docker compose up` while still **capturing**
+it — `docker compose logs es01` works, and the healthcheck and other services are
+unaffected. This is the intended tool for the job; keep it.
+
+Other options, depending on the goal:
+
+- **Declutter the terminal** — `attach: false` (current approach), or run detached
+  and tail only what you care about:
+
+  ```bash
+  docker compose up -d
+  docker compose logs -f kibana
+  ```
+
+- **Cap log disk usage** — add a logging driver limit to `es01` (rotation only;
+  does not reduce verbosity):
+
+  ```yaml
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+  ```
+
+- **Genuinely quiet ES itself** — raise log levels in `config/elasticsearch.yml`,
+  the same mechanism used for the entitlement logger, e.g.
+  `logger.org.elasticsearch: WARN`. Use sparingly: most boot noise (GC, plugin
+  loading, bootstrap) is normal and occasionally useful for debugging.
