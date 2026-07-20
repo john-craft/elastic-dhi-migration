@@ -4,14 +4,22 @@ This repo contains instructions on how to take the Docker Compose
 file from the [Elastic blog post](https://www.elastic.co/blog/getting-started-with-the-elastic-stack-and-docker-compose) 
 and migrate to use Docker Hardened Images (DHI).
 
+**Current versions:** Elasticsearch and Kibana **9.1** (DHI), with a matching
+official `docker.elastic.co` image used only by the `setup` service (which needs
+`curl` to run the cert-generation and password-bootstrap script).
+
 ## Migrating to the Docker Hardened Image (DHI)
 
-The `es01` service was switched from the stock
-`docker.elastic.co/elasticsearch/elasticsearch` image to the hardened image
-`demonstrationorg/dhi-elasticsearch:8`. The DHI image is a minimal, locked-down
-build: it runs as a different non-root user and ships a stripped entrypoint that
-does **not** include the stock image's conveniences. That broke startup in three
-stages, each fixed below.
+Both the `es01` and `kibana` services were switched from the stock
+`docker.elastic.co` images to hardened images:
+
+- `demonstrationorg/dhi-elasticsearch:9.1`
+- `demonstrationorg/dhi-kibana:9.1`
+
+The DHI images are minimal, locked-down builds: they run as a different non-root
+user, ship a stripped entrypoint that does **not** include the stock images'
+conveniences, and do **not** bundle `curl` or `wget`. That broke startup in
+several stages, each fixed below.
 
 ### 1. Certificate permissions (`AccessDeniedException: .../config/certs`)
 
@@ -47,7 +55,57 @@ the production bootstrap checks.
 `es01`. `discovery.type: single-node` now applies (which also skips the bootstrap
 checks).
 
-### 3. Recurring entitlement WARNs (cosmetic)
+### 3. Kibana: no `curl` → healthcheck fails
+
+The DHI Kibana image also lacks `curl`, so the original healthcheck
+(`curl -s -I http://localhost:5601 | grep -q 'HTTP/1.1 302 Found'`) would
+never pass, keeping Kibana in `starting` state indefinitely.
+
+**Fix:** same `/dev/tcp` approach as es01, with a `start_period` to avoid
+counting early failures:
+
+```yaml
+healthcheck:
+  test: ["CMD-SHELL", "bash -c ': >/dev/tcp/127.0.0.1/5601'"]
+  interval: 10s
+  timeout: 10s
+  retries: 120
+  start_period: 30s
+```
+
+### 4. Kibana: cert path resolved relative to wrong working directory
+
+The DHI Kibana 9.1 image installs under `/opt/kibana/kibana-9.1.x/` and
+Node.js runs from that directory as its `cwd`. The original config passed a
+relative path for the CA certificate:
+
+```
+ELASTICSEARCH_SSL_CERTIFICATEAUTHORITIES=config/certs/ca/ca.crt
+```
+
+Node resolved this to `/opt/kibana/kibana-9.1.x/config/certs/ca/ca.crt`,
+which doesn't exist — the certs volume is mounted at `/usr/share/kibana/config/certs`.
+
+**Fix:** use the absolute path:
+
+```
+ELASTICSEARCH_SSL_CERTIFICATEAUTHORITIES=/usr/share/kibana/config/certs/ca/ca.crt
+```
+
+### 5. Fleet encryption key not set
+
+Kibana's Fleet plugin requires `xpack.encryptedSavedObjects.encryptionKey` to
+store agent binary source metadata. Without it, Fleet logs a repeating warning
+and cannot fully initialise.
+
+**Fix:** pass the key via environment variable (the value is already in `.env`
+as `ENCRYPTION_KEY`):
+
+```
+XPACK_ENCRYPTEDSAVEDOBJECTS_ENCRYPTIONKEY=${ENCRYPTION_KEY}
+```
+
+### 7. Recurring entitlement WARNs (cosmetic)
 
 The hardened image's entitlement policy doesn't grant the `x-pack-security`
 hot-reload file watcher `read` access to the config files it polls
@@ -56,7 +114,7 @@ startup; these are harmless `WARN`s emitted every few seconds. The
 `config/elasticsearch.yml` raises that one logger to `ERROR` to keep the log
 readable.
 
-### 4. Data volume not writable (`failed to obtain node locks`)
+### 8. Data volume not writable (`failed to obtain node locks`)
 
 With config now loading correctly, `es01` died on startup with:
 
@@ -87,16 +145,20 @@ on every `docker compose up`.
 
 ## Files
 
-- `docker-compose.yaml` — stack definition; `es01` uses the DHI image and mounts
-  `config/elasticsearch.yml`. The `setup` service mounts `esdata01` to seed and
-  chown the data directory before `es01` starts.
+- `docker-compose.yaml` — stack definition; `es01` and `kibana` use DHI images.
+  `es01` mounts `config/elasticsearch.yml`. The `setup` service (official image,
+  needs `curl`) mounts `esdata01` to seed and chown the data directory before
+  `es01` starts.
 - `config/elasticsearch.yml` — Elasticsearch settings (previously passed as env
   vars).
-- `.env` — versions, passwords, ports, memory limits.
+- `.env` — versions, passwords, ports, memory limits. Copy `.env.example` to
+  `.env` and adjust before first run.
+- `.env.example` — template with all required variables and safe defaults.
 
 ## Usage
 
 ```bash
+cp .env.example .env   # then edit passwords / ports as needed
 docker compose up
 ```
 

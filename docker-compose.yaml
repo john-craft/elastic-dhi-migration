@@ -89,7 +89,7 @@ services:
     image: ${DHI_NAMESPACE}/dhi-elasticsearch:${DHI_ES_VERSION}
     # es01 is verbose at startup; don't stream its logs to the terminal during
     # `docker compose up`. Logs are still captured (`docker compose logs es01`).
-    attach: false
+    attach: true
     labels:
       co.elastic.logs/module: elasticsearch
     volumes:
@@ -99,22 +99,9 @@ services:
     ports:
       - ${ES_PORT}:9200
     environment:
-      - node.name=es01
-      - cluster.name=${CLUSTER_NAME}
-      - discovery.type=single-node
+      - CLUSTER_NAME=${CLUSTER_NAME}
+      - LICENSE=${LICENSE}
       - ELASTIC_PASSWORD=${ELASTIC_PASSWORD}
-      - bootstrap.memory_lock=true
-      - xpack.security.enabled=true
-      - xpack.security.http.ssl.enabled=true
-      - xpack.security.http.ssl.key=certs/es01/es01.key
-      - xpack.security.http.ssl.certificate=certs/es01/es01.crt
-      - xpack.security.http.ssl.certificate_authorities=certs/ca/ca.crt
-      - xpack.security.transport.ssl.enabled=true
-      - xpack.security.transport.ssl.key=certs/es01/es01.key
-      - xpack.security.transport.ssl.certificate=certs/es01/es01.crt
-      - xpack.security.transport.ssl.certificate_authorities=certs/ca/ca.crt
-      - xpack.security.transport.ssl.verification_mode=certificate
-      - xpack.license.self_generated.type=${LICENSE}
     mem_limit: ${ES_MEM_LIMIT}
     ulimits:
       memlock:
@@ -124,8 +111,39 @@ services:
       test:
         [
           "CMD-SHELL",
-          "curl -s --cacert config/certs/ca/ca.crt https://localhost:9200 | grep -q 'missing authentication credentials'",
+          "bash -c ': >/dev/tcp/127.0.0.1/9200'",
         ]
       interval: 10s
       timeout: 10s
       retries: 120
+      start_period: 30s
+  kibana:
+    depends_on:
+      es01:
+        condition: service_healthy
+    image: ${DHI_NAMESPACE}/dhi-kibana:${DHI_ES_VERSION}
+    volumes:
+      - certs:/usr/share/kibana/config/certs
+      - kibanadata:/usr/share/kibana/data
+    ports:
+    - ${KIBANA_PORT-5601}:5601
+    environment:
+      - SERVERNAME=kibana
+      - ELASTICSEARCH_HOSTS=https://es01:9200
+      - ELASTICSEARCH_USERNAME=kibana_system
+      - ELASTICSEARCH_PASSWORD=${KIBANA_PASSWORD}
+      - ELASTICSEARCH_SSL_CERTIFICATEAUTHORITIES=/usr/share/kibana/config/certs/ca/ca.crt
+      - SERVER_PUBLICBASEURL=http://localhost:5601
+      - XPACK_ENCRYPTEDSAVEDOBJECTS_ENCRYPTIONKEY=${ENCRYPTION_KEY}
+    mem_limit: ${KB_MEM_LIMIT}
+    healthcheck:
+      test:
+        [
+        "CMD-SHELL",
+        "bash -c ': >/dev/tcp/127.0.0.1/5601'",
+        ]
+      interval: 10s
+      timeout: 10s
+      retries: 120
+      start_period: 30s
+    attach: true
